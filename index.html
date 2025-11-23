@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Калькулятор Печи</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--tg-theme-bg-color, #ffffff);
+            color: var(--tg-theme-text-color, #000000);
+            margin: 0;
+            padding: 16px;
+            box-sizing: border-box;
+        }
+        h2 { margin-top: 0; font-size: 18px; }
+        .input-group { margin-bottom: 12px; }
+        label { display: block; margin-bottom: 4px; font-size: 14px; color: var(--tg-theme-hint-color, #888); }
+        input {
+            width: 100%;
+            padding: 10px;
+            box-sizing: border-box;
+            border: 1px solid #ccc;
+            border-radius: 8px;
+            font-size: 16px;
+            background: var(--tg-theme-secondary-bg-color, #f0f0f0);
+            color: var(--tg-theme-text-color, #000);
+        }
+        button {
+            width: 100%;
+            padding: 14px;
+            background-color: var(--tg-theme-button-color, #3390ec);
+            color: var(--tg-theme-button-text-color, #ffffff);
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            margin-top: 10px;
+        }
+        .result-card {
+            background: var(--tg-theme-secondary-bg-color, #f5f5f5);
+            padding: 12px;
+            border-radius: 8px;
+            margin-top: 20px;
+            border-left: 4px solid var(--tg-theme-button-color, #3390ec);
+        }
+        .result-title { font-weight: bold; margin-bottom: 8px; display: block; font-size: 16px;}
+        .result-line { margin-bottom: 4px; font-size: 14px; }
+        pre { 
+            white-space: pre-wrap; 
+            font-family: monospace; 
+            font-size: 12px; 
+            color: var(--tg-theme-text-color);
+        }
+    </style>
+</head>
+<body>
+
+    <h2>Параметры печи (мм)</h2>
+    
+    <div class="input-group">
+        <label>Длина (L)</label>
+        <input type="number" id="lenL" placeholder="Например: 5000">
+    </div>
+    <div class="input-group">
+        <label>Ширина (W)</label>
+        <input type="number" id="widW" placeholder="Например: 3000">
+    </div>
+    <div class="input-group">
+        <label>Высота (H)</label>
+        <input type="number" id="hgtH" placeholder="Например: 2500">
+    </div>
+
+    <button onclick="calculate()">РАССЧИТАТЬ</button>
+
+    <div id="output"></div>
+
+    <script>
+        // Инициализация Telegram WebApp
+        const tg = window.Telegram.WebApp;
+        tg.expand();
+
+        // --- ЛОГИКА РАСЧЕТА (Переписано с Python на JS) ---
+        const PANEL_LENGTH_MM = 6000;
+        const MIN_OFFCUT_LENGTH_MM = 400;
+
+        class NestingEngine {
+            constructor(panelWidth) {
+                this.panelWidth = panelWidth;
+                this.panelLength = PANEL_LENGTH_MM;
+                this.sheetsUsed = 0;
+                this.offcuts = []; // {length, width}
+                this.log = [];
+            }
+
+            findBestOffcut(reqLen, reqWidth) {
+                let bestIdx = -1;
+                let minWaste = Infinity;
+
+                for (let i = 0; i < this.offcuts.length; i++) {
+                    const offcut = this.offcuts[i];
+                    if (offcut.length >= reqLen && offcut.width >= reqWidth) {
+                        const waste = (offcut.length * offcut.width) - (reqLen * reqWidth);
+                        if (waste < minWaste) {
+                            minWaste = waste;
+                            bestIdx = i;
+                        }
+                    }
+                }
+                return bestIdx;
+            }
+
+            getPiece(length, width, context) {
+                const idx = this.findBestOffcut(length, width);
+
+                if (idx !== -1) {
+                    // Берем остаток
+                    const sourcePiece = this.offcuts.splice(idx, 1)[0];
+                    // this.log.push(`♻️ ${context}: Взят остаток ${sourcePiece.length}x${sourcePiece.width}`);
+
+                    // Остаток по длине
+                    const remLen = sourcePiece.length - length;
+                    if (remLen >= MIN_OFFCUT_LENGTH_MM) {
+                        this.offcuts.push({ length: remLen, width: sourcePiece.width });
+                    }
+                    
+                    // Остаток по ширине
+                    const remWidth = sourcePiece.width - width;
+                    if (remWidth >= 100) {
+                        this.offcuts.push({ length: length, width: remWidth });
+                    }
+
+                } else {
+                    // Новый лист
+                    this.sheetsUsed++;
+                    // this.log.push(`🆕 ${context}: Новый лист`);
+
+                    const remLen = this.panelLength - length;
+                    if (remLen >= MIN_OFFCUT_LENGTH_MM) {
+                        this.offcuts.push({ length: remLen, width: this.panelWidth });
+                    }
+
+                    const remWidth = this.panelWidth - width;
+                    if (remWidth >= 100) {
+                        this.offcuts.push({ length: length, width: remWidth });
+                    }
+                }
+            }
+
+            processSurface(name, totalLength, cutLength) {
+                const fullStrips = Math.floor(totalLength / this.panelWidth);
+                const lastStripWidth = totalLength % this.panelWidth;
+
+                for (let i = 0; i < fullStrips; i++) {
+                    this.getPiece(cutLength, this.panelWidth, `${name} (целая)`);
+                }
+
+                if (lastStripWidth > 0) {
+                    this.getPiece(cutLength, lastStripWidth, `${name} (добор)`);
+                }
+            }
+        }
+
+        function runEngine(L, W, H, panelWidth) {
+            const engine = new NestingEngine(panelWidth);
+            
+            // Логика размеров из ТЗ:
+            const floorCeilCutLen = W + 200; 
+            const floorCeilCoverLen = L;
+            
+            // Пол и Потолок
+            engine.processSurface("Пол", floorCeilCoverLen, floorCeilCutLen);
+            engine.processSurface("Потолок", floorCeilCoverLen, floorCeilCutLen);
+            
+            // Стены (Монтаж: L - длина покрытия, H - высота панели/куска)
+            engine.processSurface("Стена Л", H, L);
+            engine.processSurface("Стена П", H, L);
+
+            // Торцы
+            engine.processSurface("Задняя", W, H);
+            engine.processSurface("Двери", W, H);
+
+            return engine;
+        }
+
+        function formatReport(width, engine) {
+            let html = `<div class="result-card">`;
+            html += `<span class="result-title">🛠 Панели ${width}мм</span>`;
+            html += `<div class="result-line">📦 Листов 6000мм: <b>${engine.sheetsUsed} шт</b></div>`;
+            
+            // Группировка остатков
+            const counts = {};
+            engine.offcuts.forEach(o => {
+                const key = `${o.length}x${o.width}`;
+                counts[key] = (counts[key] || 0) + 1;
+            });
+
+            let offcutsStr = "";
+            for (const [size, count] of Object.entries(counts)) {
+                offcutsStr += `• ${size}мм: ${count} шт\n`;
+            }
+            if (!offcutsStr) offcutsStr = "Нет полезных остатков";
+
+            html += `<div class="result-line">✂️ Остатки:</div>`;
+            html += `<pre>${offcutsStr}</pre>`;
+            html += `</div>`;
+            return html;
+        }
+
+        function calculate() {
+            const L = parseInt(document.getElementById('lenL').value);
+            const W = parseInt(document.getElementById('widW').value);
+            const H = parseInt(document.getElementById('hgtH').value);
+
+            if (!L || !W || !H) {
+                tg.showAlert("Пожалуйста, введите все размеры!");
+                return;
+            }
+
+            const output = document.getElementById('output');
+            output.innerHTML = ""; // Очистить старое
+
+            // Расчет для 1000мм
+            const engine1000 = runEngine(L, W, H, 1000);
+            output.innerHTML += formatReport(1000, engine1000);
+
+            // Расчет для 1190мм
+            const engine1190 = runEngine(L, W, H, 1190);
+            output.innerHTML += formatReport(1190, engine1190);
+        }
+    </script>
+</body>
+</html>
